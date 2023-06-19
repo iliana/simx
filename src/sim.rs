@@ -1,7 +1,7 @@
 use crate::id::PlayerId;
 use crate::{Ballpark, Database, Date, Game, Inning, Player, Rng, Sim, TeamSelect};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::fmt::Write;
 use std::ops::ControlFlow;
 
 // some consts, so we know what to fix when we start implementing modifications
@@ -77,21 +77,9 @@ impl Game {
         let pitch = roll_pitch(rng, database.date, pitcher, batter);
         let swing = roll_swing(rng, database.date, pitcher, batter, pitch);
         if matches!(swing, Swing::Take) {
-            match pitch {
-                Pitch::Ball => {
-                    self.balls += 1;
-                    return ControlFlow::Break(if self.balls >= BALLS_NEEDED {
-                        // FIXME: base advancement
-                        self.baserunners.push((batter.id, 1));
-                        self.at_bat = None;
-                        format!("{} draws a walk.", batter.name)
-                    } else {
-                        format!("Ball. {}-{}", self.balls, self.strikes)
-                    });
-                }
-                Pitch::Strike => {
-                    return self.handle_strike(batter, "looking");
-                }
+            return match pitch {
+                Pitch::Ball => self.handle_ball(batter, database),
+                Pitch::Strike => self.handle_strike(batter, "looking"),
             };
         }
         let contact = roll_contact(rng, database.date, pitcher, batter, pitch);
@@ -229,12 +217,7 @@ impl Game {
 
     fn handle_steal(&mut self, rng: &mut Rng, database: &Database) -> ControlFlow<String> {
         let _fielder = self.roll_fielder(rng, database);
-        let occupied = self
-            .baserunners
-            .iter()
-            .map(|(_, base)| base)
-            .copied()
-            .collect::<BTreeSet<_>>();
+        let occupied = self.bases_occupied();
         let mut caught = None;
         for (idx, entry) in self.baserunners.iter_mut().enumerate() {
             let base = &mut entry.1;
@@ -284,6 +267,30 @@ impl Game {
             self.baserunners = Vec::new();
             self.inning.advance();
         }
+    }
+
+    fn handle_ball(&mut self, batter: &Player, database: &Database) -> ControlFlow<String, Never> {
+        self.balls += 1;
+        ControlFlow::Break(if self.balls >= BALLS_NEEDED {
+            let mut message = format!("{} draws a walk.", batter.name);
+            let occupied = self.bases_occupied();
+            for (runner, mut base) in std::mem::take(&mut self.baserunners) {
+                if (1..base).all(|b| occupied.contains(&b)) {
+                    base += 1;
+                }
+                if base >= HOME_BASE {
+                    write!(message, " {} scores!", runner.load(database).name)
+                        .expect("std::fmt::Write does not fail on String");
+                } else {
+                    self.baserunners.push((runner, base));
+                }
+            }
+            self.baserunners.push((batter.id, 1));
+            self.at_bat = None;
+            format!("{} draws a walk.", batter.name)
+        } else {
+            format!("Ball. {}-{}", self.balls, self.strikes)
+        })
     }
 
     fn handle_strike(&mut self, batter: &Player, kind: &'static str) -> ControlFlow<String, Never> {

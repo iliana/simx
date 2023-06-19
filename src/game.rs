@@ -1,6 +1,7 @@
 use crate::id::{GameId, PlayerId, TeamId};
 use crate::Date;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -46,6 +47,10 @@ impl Game {
 
     pub fn is_finished(&self) -> bool {
         self.winner.is_some()
+    }
+
+    pub fn bases_occupied(&self) -> BTreeSet<u8> {
+        self.baserunners.iter().map(|(_, base)| *base).collect()
     }
 }
 
