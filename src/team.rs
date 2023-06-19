@@ -12,3 +12,9 @@ pub struct Team {
     pub shadows: Vec<PlayerId>,
     pub rotation_slot: usize,
 }
+
+impl Team {
+    pub fn name(&self) -> String {
+        format!("{} {}", self.location, self.nickname)
+    }
+}

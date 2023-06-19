@@ -6,6 +6,10 @@ type State = [Wrapping<u64>; 2];
 type Iter = IntoIter<u64, 64>;
 
 /// XorShift128+, as seen in Node.js 12.
+// clippy::unsafe_derive_deserialize:
+// - `State` has no invariants
+// - `Iter` has its own deserialize implementation
+#[allow(clippy::unsafe_derive_deserialize)]
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Rng {
     state: State,
@@ -18,13 +22,17 @@ pub struct Rng {
 
 impl Rng {
     pub fn new() -> Rng {
-        let mut state = rand_state();
-        let iter = next_buf(&mut state);
-        Rng { state, iter }
+        let mut buf = [0; 16];
+        getrandom::getrandom(&mut buf).expect("failed to get random seed");
+        // SAFETY: integers are plain old datatypes so we can always transmute to them
+        Rng::from_state(unsafe { std::mem::transmute(buf) })
     }
 
     pub fn seeded(s0: u64, s1: u64) -> Rng {
-        let mut state = [Wrapping(s0), Wrapping(s1)];
+        Rng::from_state([Wrapping(s0), Wrapping(s1)])
+    }
+
+    fn from_state(mut state: State) -> Rng {
         let iter = next_buf(&mut state);
         Rng { state, iter }
     }
@@ -53,13 +61,6 @@ impl Rng {
         let n = (self.next_f64() * len).floor() as usize;
         choices.nth(n)
     }
-}
-
-fn rand_state() -> State {
-    let mut buf = [0; 16];
-    getrandom::getrandom(&mut buf).expect("failed to get random seed");
-    // SAFETY: integers are plain old datatypes so we can always transmute to them
-    unsafe { std::mem::transmute(buf) }
 }
 
 fn next_buf(state: &mut State) -> Iter {
@@ -167,24 +168,26 @@ mod tests {
     }
 
     #[test]
-    fn ser_and_de() {
+    fn ser_and_de() -> Result<(), serde_json::Error> {
         let mut rng = Rng::new();
-        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng).unwrap()).unwrap();
+        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng)?)?;
         assert_eq!(rng, rebuilt);
 
         rng.nth(14);
         assert_eq!(rng.iter.as_slice().len(), 49);
-        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng).unwrap()).unwrap();
+        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng)?)?;
         assert_eq!(rng, rebuilt);
 
         rng.nth(48);
         assert_eq!(rng.iter.as_slice().len(), 0);
-        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng).unwrap()).unwrap();
+        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng)?)?;
         assert_eq!(rng, rebuilt);
 
         rng.next();
         assert_eq!(rng.iter.as_slice().len(), 63);
-        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng).unwrap()).unwrap();
+        let rebuilt: Rng = serde_json::from_str(&serde_json::to_string(&rng)?)?;
         assert_eq!(rng, rebuilt);
+
+        Ok(())
     }
 }

@@ -2,6 +2,8 @@ macro_rules! id {
     ($name:ident, $field:ident, $ty:ty) => {
         id!($name);
 
+        // These methods call `Option::expect` because we treat a situation where an ID reference
+        // can't be found as an invariant. See `Database::check_consistency`.
         impl $name {
             pub fn load(self, database: &$crate::Database) -> &$ty {
                 database.$field.get(&self).expect(&format!(
@@ -25,6 +27,7 @@ macro_rules! id {
         #[derive(
             Clone,
             Copy,
+            Default,
             PartialEq,
             Eq,
             PartialOrd,
@@ -40,12 +43,6 @@ macro_rules! id {
         impl $name {
             pub fn new() -> $name {
                 $name(::uuid::Uuid::new_v4())
-            }
-        }
-
-        impl ::std::default::Default for $name {
-            fn default() -> $name {
-                $name::new()
             }
         }
 
@@ -71,6 +68,7 @@ macro_rules! id {
     };
 }
 
+id!(BallparkId);
 id!(GameId);
 id!(PlayerId, players, crate::Player);
 id!(TeamId, teams, crate::Team);

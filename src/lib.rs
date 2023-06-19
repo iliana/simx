@@ -5,6 +5,7 @@
     clippy::uninlined_format_args
 )]
 
+mod ballpark;
 mod database;
 mod game;
 pub mod id;
@@ -14,6 +15,7 @@ mod sim;
 mod team;
 mod util;
 
+pub use crate::ballpark::Ballpark;
 pub use crate::database::Database;
 pub use crate::game::{AwayHome, Game, GameTeam, Inning, TeamSelect};
 pub use crate::player::Player;

@@ -8,7 +8,7 @@ pub struct Game {
     pub id: GameId,
     #[serde(flatten)]
     pub date: Date,
-    pub finished: bool,
+    pub winner: Option<TeamId>,
 
     pub last_update: String,
 
@@ -34,6 +34,7 @@ pub struct GameTeam {
 impl Game {
     pub fn new(date: Date, teams: AwayHome<TeamId>) -> Game {
         Game {
+            id: GameId::new(),
             date,
             teams: teams.map(|id| GameTeam {
                 id,
@@ -42,34 +43,57 @@ impl Game {
             ..Game::default()
         }
     }
+
+    pub fn is_finished(&self) -> bool {
+        self.winner.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", tag = "frame", content = "inning")]
 pub enum Inning {
     Top(usize),
+    Mid(usize),
     Bottom(usize),
+    End(usize),
 }
 
 impl Inning {
     pub fn advance(&mut self) {
         *self = match *self {
-            Inning::Top(n) => Inning::Bottom(n),
-            Inning::Bottom(n) => Inning::Top(n + 1),
+            Inning::Top(n) => Inning::Mid(n),
+            Inning::Mid(n) => Inning::Bottom(n),
+            Inning::Bottom(n) => Inning::End(n),
+            Inning::End(n) => Inning::Top(n + 1),
         };
     }
 
-    pub fn batting(&self) -> TeamSelect {
+    pub fn word(self) -> &'static str {
         match self {
-            Inning::Top(_) => TeamSelect::Away,
-            Inning::Bottom(_) => TeamSelect::Home,
+            Inning::Top(_) => "Top",
+            Inning::Mid(_) => "Mid",
+            Inning::Bottom(_) => "Bottom",
+            Inning::End(_) => "End",
         }
     }
 
-    pub fn fielding(&self) -> TeamSelect {
+    pub fn number(self) -> usize {
         match self {
-            Inning::Top(_) => TeamSelect::Home,
-            Inning::Bottom(_) => TeamSelect::Away,
+            Inning::Top(n) | Inning::Mid(n) | Inning::Bottom(n) | Inning::End(n) => n,
+        }
+    }
+
+    pub fn batting(self) -> TeamSelect {
+        match self {
+            Inning::Top(_) | Inning::Mid(_) => TeamSelect::Away,
+            Inning::Bottom(_) | Inning::End(_) => TeamSelect::Home,
+        }
+    }
+
+    pub fn fielding(self) -> TeamSelect {
+        match self {
+            Inning::Top(_) | Inning::Mid(_) => TeamSelect::Home,
+            Inning::Bottom(_) | Inning::End(_) => TeamSelect::Away,
         }
     }
 }
@@ -84,12 +108,6 @@ impl Default for Inning {
 pub struct AwayHome<T> {
     pub away: T,
     pub home: T,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum TeamSelect {
-    Away,
-    Home,
 }
 
 impl<T> AwayHome<T> {
@@ -125,4 +143,10 @@ impl<T> AwayHome<Option<T>> {
             home: self.home?,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum TeamSelect {
+    Away,
+    Home,
 }
