@@ -10,6 +10,12 @@ const STRIKES_NEEDED: u8 = 3;
 const OUTS_NEEDED: u8 = 3;
 const HOME_BASE: u8 = 4;
 
+// some newtypes so i write fewer bugs
+#[derive(derive_more::Deref)]
+struct Batter<'a>(&'a Player);
+#[derive(derive_more::Deref)]
+struct Pitcher<'a>(&'a Player);
+
 impl Sim {
     // TODO: Right now this returns nothing, but in the future I'd like it to return a batch of
     // events (think The Feed) that can get shoved into a database. (Databases are strictly outside
@@ -70,22 +76,22 @@ impl Game {
 
         let pitcher = self.get_pitcher(rng, database);
         let batter = self.get_batter(rng, database)?;
-        let pitcher = pitcher.load(database);
-        let batter = batter.load(database);
+        let pitcher = Pitcher(pitcher.load(database));
+        let batter = Batter(batter.load(database));
 
         self.handle_steal(rng, database)?;
-        let strike = roll_strike(rng, database.date, pitcher, batter);
-        if !roll_swing(rng, database.date, pitcher, batter, strike) {
+        let strike = roll_strike(rng, database.date, &pitcher, &batter);
+        if !roll_swing(rng, database.date, &pitcher, &batter, strike) {
             return if strike {
-                self.handle_strike(batter, "looking")
+                self.handle_strike(&batter, "looking")
             } else {
-                self.handle_ball(batter, database)
+                self.handle_ball(&batter, database)
             };
         }
-        if !roll_contact(rng, database.date, pitcher, batter, strike) {
-            return self.handle_strike(batter, "swinging");
+        if !roll_contact(rng, database.date, &pitcher, &batter, strike) {
+            return self.handle_strike(&batter, "swinging");
         }
-        if roll_foul(rng, database.date, batter) {
+        if roll_foul(rng, database.date, &batter) {
             self.strikes = 2.min(self.strikes + 1);
             return ControlFlow::Break(format!("Foul Ball. {}-{}", self.balls, self.strikes));
         }
@@ -272,7 +278,11 @@ impl Game {
         }
     }
 
-    fn handle_ball(&mut self, batter: &Player, database: &Database) -> ControlFlow<String, Never> {
+    fn handle_ball(
+        &mut self,
+        batter: &Batter<'_>,
+        database: &Database,
+    ) -> ControlFlow<String, Never> {
         self.balls += 1;
         ControlFlow::Break(if self.balls >= BALLS_NEEDED {
             let mut message = format!("{} draws a walk.", batter.name);
@@ -296,7 +306,11 @@ impl Game {
         })
     }
 
-    fn handle_strike(&mut self, batter: &Player, kind: &'static str) -> ControlFlow<String, Never> {
+    fn handle_strike(
+        &mut self,
+        batter: &Batter<'_>,
+        kind: &'static str,
+    ) -> ControlFlow<String, Never> {
         self.strikes += 1;
         ControlFlow::Break(if self.strikes >= STRIKES_NEEDED {
             self.handle_out();
@@ -308,7 +322,7 @@ impl Game {
     }
 }
 
-fn roll_strike(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player) -> bool {
+fn roll_strike(rng: &mut Rng, date: Date, pitcher: &Pitcher<'_>, batter: &Batter<'_>) -> bool {
     let ballpark = Ballpark::default(); // TODO
 
     // NOTE: mostly using the season 14 formula
@@ -320,7 +334,13 @@ fn roll_strike(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player) -> 
     rng.next_f64() < threshold
 }
 
-fn roll_swing(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player, strike: bool) -> bool {
+fn roll_swing(
+    rng: &mut Rng,
+    date: Date,
+    pitcher: &Pitcher<'_>,
+    batter: &Batter<'_>,
+    strike: bool,
+) -> bool {
     let ballpark = Ballpark::default(); // TODO
     let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
     let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.vibes(date);
@@ -350,8 +370,8 @@ fn roll_swing(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player, stri
 fn roll_contact(
     rng: &mut Rng,
     date: Date,
-    pitcher: &Player,
-    batter: &Player,
+    pitcher: &Pitcher<'_>,
+    batter: &Batter<'_>,
     strike: bool,
 ) -> bool {
     let ballpark = Ballpark::default(); // TODO
@@ -384,7 +404,7 @@ fn roll_contact(
     rng.next_f64() < threshold
 }
 
-fn roll_foul(rng: &mut Rng, date: Date, batter: &Player) -> bool {
+fn roll_foul(rng: &mut Rng, date: Date, batter: &Batter<'_>) -> bool {
     let ballpark = Ballpark::default(); // TODO
     let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
 
