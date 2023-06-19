@@ -74,17 +74,20 @@ impl Game {
         let batter = batter.load(database);
 
         self.handle_steal(rng, database)?;
-        let pitch = roll_pitch(rng, database.date, pitcher, batter);
-        let swing = roll_swing(rng, database.date, pitcher, batter, pitch);
-        if matches!(swing, Swing::Take) {
-            return match pitch {
-                Pitch::Ball => self.handle_ball(batter, database),
-                Pitch::Strike => self.handle_strike(batter, "looking"),
+        let strike = roll_strike(rng, database.date, pitcher, batter);
+        if !roll_swing(rng, database.date, pitcher, batter, strike) {
+            return if strike {
+                self.handle_strike(batter, "looking")
+            } else {
+                self.handle_ball(batter, database)
             };
         }
-        let contact = roll_contact(rng, database.date, pitcher, batter, pitch);
-        if matches!(contact, Contact::Miss) {
+        if !roll_contact(rng, database.date, pitcher, batter, strike) {
             return self.handle_strike(batter, "swinging");
+        }
+        if roll_foul(rng, database.date, batter) {
+            self.strikes = 2.min(self.strikes + 1);
+            return ControlFlow::Break(format!("Foul Ball. {}-{}", self.balls, self.strikes));
         }
 
         todo!();
@@ -305,13 +308,7 @@ impl Game {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Pitch {
-    Ball,
-    Strike,
-}
-
-fn roll_pitch(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player) -> Pitch {
+fn roll_strike(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player) -> bool {
     let ballpark = Ballpark::default(); // TODO
 
     // NOTE: mostly using the season 14 formula
@@ -320,58 +317,34 @@ fn roll_pitch(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player) -> P
         + (0.2 * ballpark.forwardness)
         + (0.1 * batter.musclitude))
         .min(0.86);
-    if rng.next_f64() < threshold {
-        Pitch::Strike
-    } else {
-        Pitch::Ball
-    }
+    rng.next_f64() < threshold
 }
 
-#[derive(Clone, Copy)]
-enum Swing {
-    Swing,
-    Take,
-}
-
-fn roll_swing(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player, pitch: Pitch) -> Swing {
+fn roll_swing(rng: &mut Rng, date: Date, pitcher: &Player, batter: &Player, strike: bool) -> bool {
     let ballpark = Ballpark::default(); // TODO
     let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
     let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.vibes(date);
 
-    let threshold = match pitch {
-        Pitch::Ball => {
-            let moxie = batter.moxie * batter_vibes_mod;
-            let path = batter.patheticism;
-            let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
-            let combined =
-                (12.0 * ruth - 5.0 * moxie + 5.0 * path + 4.0 * ballpark.viscosity) / 20.0;
-            if combined < 0.0 {
-                f64::NAN
-            } else {
-                combined.powf(1.5).clamp(0.1, 0.95)
-            }
-        }
-        Pitch::Strike => {
-            let div = batter.divinity * batter_vibes_mod;
-            let musc = batter.musclitude * batter_vibes_mod;
-            let thwack = batter.thwackability * batter_vibes_mod;
-            let invpath = (1.0 - batter.patheticism) * batter_vibes_mod;
-            let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
-            let combined = (div + musc + invpath + thwack) / 4.0;
-            0.6 + (0.35 * combined) - (0.2 * ruth) + (0.2 * (ballpark.viscosity - 0.5))
+    let threshold = if strike {
+        let div = batter.divinity * batter_vibes_mod;
+        let musc = batter.musclitude * batter_vibes_mod;
+        let thwack = batter.thwackability * batter_vibes_mod;
+        let invpath = (1.0 - batter.patheticism) * batter_vibes_mod;
+        let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+        let combined = (div + musc + invpath + thwack) / 4.0;
+        0.6 + (0.35 * combined) - (0.2 * ruth) + (0.2 * (ballpark.viscosity - 0.5))
+    } else {
+        let moxie = batter.moxie * batter_vibes_mod;
+        let path = batter.patheticism;
+        let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+        let combined = (12.0 * ruth - 5.0 * moxie + 5.0 * path + 4.0 * ballpark.viscosity) / 20.0;
+        if combined < 0.0 {
+            f64::NAN
+        } else {
+            combined.powf(1.5).clamp(0.1, 0.95)
         }
     };
-    if rng.next_f64() < threshold {
-        Swing::Swing
-    } else {
-        Swing::Take
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Contact {
-    Thwack,
-    Miss,
+    rng.next_f64() < threshold
 }
 
 fn roll_contact(
@@ -379,8 +352,8 @@ fn roll_contact(
     date: Date,
     pitcher: &Player,
     batter: &Player,
-    pitch: Pitch,
-) -> Contact {
+    strike: bool,
+) -> bool {
     let ballpark = Ballpark::default(); // TODO
     let fort = ballpark.fortification - 0.5;
     let visc = ballpark.viscosity - 0.5;
@@ -391,29 +364,33 @@ fn roll_contact(
     let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.vibes(date);
 
     // NOTE: mostly using the season 14 formula
-    let threshold = match pitch {
-        Pitch::Ball => {
-            let path = ((1.0 - batter.patheticism) * batter_vibes_mod).max(0.0);
+    let threshold = if strike {
+        let div = batter.divinity;
+        let musc = batter.musclitude;
+        let thwack = batter.thwackability;
+        let path = batter.patheticism;
+        let combined = (div + musc + thwack - path) / 2.0 * batter_vibes_mod;
+        if combined < 0.0 {
+            f64::NAN
+        } else {
             let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
-            (0.4 - (0.1 * ruth) + (0.35 * path.powf(1.5)) + (0.14 * ballpark_sum)).min(1.0)
+            (0.78 - (0.08 * ruth) + (0.16 * ballpark_sum) + 0.17 * combined.powf(1.2)).min(0.9)
         }
-        Pitch::Strike => {
-            let div = batter.divinity;
-            let musc = batter.musclitude;
-            let thwack = batter.thwackability;
-            let path = batter.patheticism;
-            let combined = (div + musc + thwack - path) / 2.0 * batter_vibes_mod;
-            if combined < 0.0 {
-                f64::NAN
-            } else {
-                let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
-                (0.78 - (0.08 * ruth) + (0.16 * ballpark_sum) + 0.17 * combined.powf(1.2)).min(0.9)
-            }
-        }
-    };
-    if rng.next_f64() < threshold {
-        Contact::Thwack
     } else {
-        Contact::Miss
-    }
+        let path = ((1.0 - batter.patheticism) * batter_vibes_mod).max(0.0);
+        let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+        (0.4 - (0.1 * ruth) + (0.35 * path.powf(1.5)) + (0.14 * ballpark_sum)).min(1.0)
+    };
+    rng.next_f64() < threshold
+}
+
+fn roll_foul(rng: &mut Rng, date: Date, batter: &Player) -> bool {
+    let ballpark = Ballpark::default(); // TODO
+    let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
+
+    let batter_sum =
+        (batter.musclitude + batter.thwackability + batter.divinity) * batter_vibes_mod / 3.0;
+    let threshold =
+        0.25 + (0.1 * ballpark.forwardness) - (0.1 * ballpark.obtuseness) + (0.1 * batter_sum);
+    rng.next_f64() < threshold
 }
