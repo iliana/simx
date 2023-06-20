@@ -39,7 +39,7 @@ impl Sim {
 
         // In debug mode (dev/test profiles), panic if we've introduced a database consistency
         // problem.
-        debug_assert_eq!(database.check_consistency(), Ok(()));
+        database.debug_check();
     }
 }
 
@@ -145,7 +145,7 @@ macro_rules! next_in_order {
             } {
                 player
             } else {
-                let player = Player::generate_with_name($rng, $db, $new_name.to_string());
+                let player = Player::generate_with_name($rng, $new_name.to_string());
                 let player_id = player.id;
                 $db.players.insert(player_id, player);
                 data.id.load_mut($db).$team_field.push(player_id);
@@ -215,13 +215,16 @@ impl Game {
         }
     }
 
-    fn handle_game_over(&mut self, database: &Database) -> ControlFlow<String> {
+    fn handle_game_over(&mut self, database: &mut Database) -> ControlFlow<String> {
         let winner = match (self.inning, self.teams.away.runs.cmp(&self.teams.home.runs)) {
             (Inning::Mid(n) | Inning::End(n), Ordering::Less) if n >= 9 => TeamSelect::Home,
             (Inning::End(n), Ordering::Greater) if n >= 9 => TeamSelect::Away,
             _ => return ControlFlow::Continue(()),
         };
         self.winner = Some(self.teams.select(winner).id);
+        for team in self.teams.iter() {
+            team.id.load_mut(database).rotation_slot += 1;
+        }
         ControlFlow::Break(format!(
             "Game over. {} {}, {} {}",
             self.teams.away.id.load(database).nickname,
@@ -295,6 +298,7 @@ impl Game {
         if self.outs >= OUTS_NEEDED {
             self.outs = 0;
             self.at_bat = None;
+            self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
             self.baserunners = Vec::new();
             self.inning.advance();
         }
@@ -323,6 +327,7 @@ impl Game {
             }
             self.baserunners.push((batter.0.id, 1));
             self.at_bat = None;
+            self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
             format!("{} draws a walk.", batter.0.name)
         } else {
             format!("Ball. {}-{}", self.balls, self.strikes)
@@ -338,6 +343,7 @@ impl Game {
         ControlFlow::Break(if self.strikes >= STRIKES_NEEDED {
             self.handle_out();
             self.at_bat = None;
+            self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
             format!("{} strikes out {}.", batter.0.name, kind)
         } else {
             format!("Strike, {}. {}-{}", kind, self.balls, self.strikes)

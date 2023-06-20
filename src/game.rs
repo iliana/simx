@@ -1,5 +1,6 @@
+use crate::database::{CheckEntity, Database};
 use crate::id::{GameId, PlayerId, TeamId};
-use crate::Date;
+use crate::DatabaseError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -7,8 +8,6 @@ use std::collections::BTreeSet;
 #[non_exhaustive]
 pub struct Game {
     pub id: GameId,
-    #[serde(flatten)]
-    pub date: Date,
     pub winner: Option<TeamId>,
 
     pub last_update: String,
@@ -33,10 +32,9 @@ pub struct GameTeam {
 }
 
 impl Game {
-    pub fn new(date: Date, teams: AwayHome<TeamId>) -> Game {
+    pub fn new(teams: AwayHome<TeamId>) -> Game {
         Game {
             id: GameId::new(),
-            date,
             teams: teams.map(|id| GameTeam {
                 id,
                 ..GameTeam::default()
@@ -49,8 +47,43 @@ impl Game {
         self.winner.is_some()
     }
 
-    pub fn bases_occupied(&self) -> BTreeSet<u8> {
+    pub(crate) fn bases_occupied(&self) -> BTreeSet<u8> {
         self.baserunners.iter().map(|(_, base)| *base).collect()
+    }
+}
+
+impl CheckEntity for Game {
+    fn problems(&self, database: &Database) -> Vec<DatabaseError> {
+        let mut problems = Vec::new();
+        if self.id.0.is_nil() {
+            problems.push(DatabaseError::NilId);
+        }
+        for team in self
+            .winner
+            .iter()
+            .chain(self.teams.iter().map(|data| &data.id))
+        {
+            if !database.teams.contains_key(team) {
+                problems.push(DatabaseError::BadReference {
+                    kind: "team",
+                    id: team.0,
+                });
+            }
+        }
+        for player in self
+            .at_bat
+            .iter()
+            .chain(self.baserunners.iter().map(|(p, _)| p))
+            .chain(self.teams.iter().filter_map(|data| data.pitcher.as_ref()))
+        {
+            if !database.players.contains_key(player) {
+                problems.push(DatabaseError::BadReference {
+                    kind: "player",
+                    id: player.0,
+                });
+            }
+        }
+        problems
     }
 }
 
@@ -116,6 +149,14 @@ pub struct AwayHome<T> {
 }
 
 impl<T> AwayHome<T> {
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        [&self.away, &self.home].into_iter()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        [&mut self.away, &mut self.home].into_iter()
+    }
+
     pub fn map<U, F>(self, mut op: F) -> AwayHome<U>
     where
         F: FnMut(T) -> U,

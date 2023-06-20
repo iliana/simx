@@ -1,5 +1,6 @@
+use crate::database::CheckEntity;
 use crate::id::PlayerId;
-use crate::{Database, Date, Rng};
+use crate::{Database, DatabaseError, Date, Rng};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -7,7 +8,6 @@ use serde::{Deserialize, Serialize};
 pub struct Player {
     pub id: PlayerId,
     pub name: String,
-    pub deceased: bool,
 
     pub thwackability: f64,
     pub moxie: f64,
@@ -42,32 +42,16 @@ pub struct Player {
     #[serde(alias = "peanutAllergy")]
     pub peanut_allergy: bool,
     pub fate: u8,
-    pub ritual: String,
     pub blood: u8,
     pub coffee: u8,
 }
 
-macro_rules! strs {
-    ($slice:expr) => {
-        $slice.iter().map(AsRef::<str>::as_ref)
-    };
-}
-
 impl Player {
-    pub fn generate(rng: &mut Rng, database: &Database) -> Player {
-        let name = format!(
-            "{} {}",
-            rng.choose(strs!(database.first_names)).unwrap_or_default(),
-            rng.choose(strs!(database.last_names)).unwrap_or_default(),
-        );
-        Player::generate_with_name(rng, database, name)
-    }
-
-    pub fn generate_with_name(rng: &mut Rng, database: &Database, name: String) -> Player {
+    // TODO: figure out the interface around name/ritual pools and make `pub`
+    pub(crate) fn generate_with_name(rng: &mut Rng, name: String) -> Player {
         Player {
             id: PlayerId::new(),
             name,
-            deceased: false,
             thwackability: rng.next_f64(),
             moxie: rng.next_f64(),
             divinity: rng.next_f64(),
@@ -96,11 +80,8 @@ impl Player {
             cinnamon: rng.next_f64(),
             soul: rng.choose(2..10).unwrap_or_default(),
             peanut_allergy: rng.choose([true, false]).unwrap_or_default(),
-            fate: rng.choose(0..100).unwrap_or_default(),
-            ritual: rng
-                .choose(strs!(database.rituals))
-                .unwrap_or_default()
-                .to_string(),
+            // ritual gets rolled after fate but we don't pick that yet, so throw away a roll.
+            fate: (rng.choose(0..100).unwrap_or_default(), rng.next_f64()).0,
             blood: rng.choose(0..13).unwrap_or_default(),
             coffee: rng.choose(0..13).unwrap_or_default(),
         }
@@ -109,5 +90,15 @@ impl Player {
     pub fn vibes(&self, date: Date) -> f64 {
         let frequency = 6.0 + (10.0 * self.buoyancy).round();
         (std::f64::consts::PI * ((2.0 / frequency) * f64::from(date.day) + 0.5)).sin()
+    }
+}
+
+impl CheckEntity for Player {
+    fn problems(&self, _database: &Database) -> Vec<DatabaseError> {
+        let mut problems = Vec::new();
+        if self.id.0.is_nil() {
+            problems.push(DatabaseError::NilId);
+        }
+        problems
     }
 }

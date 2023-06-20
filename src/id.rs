@@ -4,8 +4,9 @@ macro_rules! id {
 
         // These methods call `Option::expect` because we treat a situation where an ID reference
         // can't be found as an invariant. See `Database::check_consistency`.
+        #[allow(unused)]
         impl $name {
-            pub fn load(self, database: &$crate::Database) -> &$ty {
+            pub(crate) fn load(self, database: &$crate::Database) -> &$ty {
                 database.$field.get(&self).expect(&format!(
                     "{} {} not found",
                     stringify!($name),
@@ -13,7 +14,7 @@ macro_rules! id {
                 ))
             }
 
-            pub fn load_mut(self, database: &mut $crate::Database) -> &mut $ty {
+            pub(crate) fn load_mut(self, database: &mut $crate::Database) -> &mut $ty {
                 database.$field.get_mut(&self).expect(&format!(
                     "{} {} not found",
                     stringify!($name),
