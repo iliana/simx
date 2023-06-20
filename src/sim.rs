@@ -296,6 +296,8 @@ impl Game {
     fn handle_out(&mut self) {
         self.outs += 1;
         if self.outs >= OUTS_NEEDED {
+            self.balls = 0;
+            self.strikes = 0;
             self.outs = 0;
             self.at_bat = None;
             self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
