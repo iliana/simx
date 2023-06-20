@@ -11,9 +11,8 @@ const OUTS_NEEDED: u8 = 3;
 const HOME_BASE: u8 = 4;
 
 // some newtypes so i write fewer bugs
-#[derive(derive_more::Deref)]
 struct Batter<'a>(&'a Player);
-#[derive(derive_more::Deref)]
+struct Fielder<'a>(&'a Player);
 struct Pitcher<'a>(&'a Player);
 
 impl Sim {
@@ -95,8 +94,29 @@ impl Game {
             self.strikes = 2.min(self.strikes + 1);
             return ControlFlow::Break(format!("Foul Ball. {}-{}", self.balls, self.strikes));
         }
-
-        todo!();
+        let fielder = self.roll_fielder(rng, database);
+        if roll_out(rng, database.date, &pitcher, &fielder, &batter) {
+            // TODO: double play / fielder's choice
+            let kind = if roll_flyout(rng, &batter) {
+                "flyout"
+            } else {
+                // TODO: ground out advances
+                "ground out"
+            };
+            return ControlFlow::Break(format!(
+                "{} hit a {} to {}.",
+                batter.0.name, kind, fielder.0.name
+            ));
+        }
+        if roll_home_run(rng, database.date, &pitcher, &batter) {
+            return self.handle_home_run(&batter);
+        }
+        let defender = self.roll_fielder(rng, database);
+        self.handle_base_hit(
+            &batter,
+            database,
+            roll_base_hit(rng, database.date, &pitcher, &defender, &batter),
+        )
     }
 }
 
@@ -211,17 +231,19 @@ impl Game {
         ))
     }
 
-    fn roll_fielder<'a>(&mut self, rng: &mut Rng, database: &'a Database) -> &'a Player {
-        rng.choose(
-            self.teams
-                .select(self.inning.fielding())
-                .id
-                .load(database)
-                .lineup
-                .clone(),
+    fn roll_fielder<'a>(&mut self, rng: &mut Rng, database: &'a Database) -> Fielder<'a> {
+        Fielder(
+            rng.choose(
+                self.teams
+                    .select(self.inning.fielding())
+                    .id
+                    .load(database)
+                    .lineup
+                    .clone(),
+            )
+            .expect("lineup was empty")
+            .load(database),
         )
-        .expect("lineup was empty")
-        .load(database)
     }
 
     fn handle_steal(&mut self, rng: &mut Rng, database: &Database) -> ControlFlow<String> {
@@ -285,22 +307,23 @@ impl Game {
     ) -> ControlFlow<String, Never> {
         self.balls += 1;
         ControlFlow::Break(if self.balls >= BALLS_NEEDED {
-            let mut message = format!("{} draws a walk.", batter.name);
+            let mut message = format!("{} draws a walk.", batter.0.name);
             let occupied = self.bases_occupied();
             for (runner, mut base) in std::mem::take(&mut self.baserunners) {
                 if (1..base).all(|b| occupied.contains(&b)) {
                     base += 1;
                 }
                 if base >= HOME_BASE {
+                    self.teams.select_mut(self.inning.batting()).runs += 1;
                     write!(message, " {} scores!", runner.load(database).name)
                         .expect("std::fmt::Write does not fail on String");
                 } else {
                     self.baserunners.push((runner, base));
                 }
             }
-            self.baserunners.push((batter.id, 1));
+            self.baserunners.push((batter.0.id, 1));
             self.at_bat = None;
-            format!("{} draws a walk.", batter.name)
+            format!("{} draws a walk.", batter.0.name)
         } else {
             format!("Ball. {}-{}", self.balls, self.strikes)
         })
@@ -315,10 +338,50 @@ impl Game {
         ControlFlow::Break(if self.strikes >= STRIKES_NEEDED {
             self.handle_out();
             self.at_bat = None;
-            format!("{} strikes out {}.", batter.name, kind)
+            format!("{} strikes out {}.", batter.0.name, kind)
         } else {
             format!("Strike, {}. {}-{}", kind, self.balls, self.strikes)
         })
+    }
+
+    fn handle_home_run(&mut self, batter: &Batter<'_>) -> ControlFlow<String, Never> {
+        let mut runs = 0;
+        for _ in self.baserunners.drain(..) {
+            runs += 1;
+        }
+        self.teams.select_mut(self.inning.batting()).runs += runs;
+        ControlFlow::Break(if runs == 1 {
+            format!("{} hits a solo home run!", batter.0.name)
+        } else {
+            format!("{} hits a {}-run home run!", batter.0.name, runs)
+        })
+    }
+
+    fn handle_base_hit(
+        &mut self,
+        batter: &Batter<'_>,
+        database: &Database,
+        bases: u8,
+    ) -> ControlFlow<String, Never> {
+        let mut message = match bases {
+            1 => format!("{} hits a Single!", batter.0.name),
+            2 => format!("{} hits a Double!", batter.0.name),
+            3 => format!("{} hits a Triple!", batter.0.name),
+            4 => format!("{} hits a Quadruple!", batter.0.name),
+            _ => format!("{} hits a {}-base Hit!", batter.0.name, bases),
+        };
+        for (runner, mut base) in std::mem::take(&mut self.baserunners) {
+            // TODO: extra base advancement
+            base += bases;
+            if base >= HOME_BASE {
+                self.teams.select_mut(self.inning.batting()).runs += 1;
+                write!(message, " {} scores!", runner.load(database).name)
+                    .expect("std::fmt::Write does not fail on String");
+            } else {
+                self.baserunners.push((runner, base));
+            }
+        }
+        ControlFlow::Break(message)
     }
 }
 
@@ -327,9 +390,9 @@ fn roll_strike(rng: &mut Rng, date: Date, pitcher: &Pitcher<'_>, batter: &Batter
 
     // NOTE: mostly using the season 14 formula
     let threshold = (0.2
-        + (0.285 * (pitcher.ruthlessness * (1.0 + 0.2 * pitcher.vibes(date))))
+        + (0.285 * (pitcher.0.ruthlessness * (1.0 + 0.2 * pitcher.0.vibes(date))))
         + (0.2 * ballpark.forwardness)
-        + (0.1 * batter.musclitude))
+        + (0.1 * batter.0.musclitude))
         .min(0.86);
     rng.next_f64() < threshold
 }
@@ -342,21 +405,21 @@ fn roll_swing(
     strike: bool,
 ) -> bool {
     let ballpark = Ballpark::default(); // TODO
-    let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
-    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.vibes(date);
+    let batter_vibes_mod = 1.0 + 0.2 * batter.0.vibes(date);
+    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.0.vibes(date);
 
     let threshold = if strike {
-        let div = batter.divinity * batter_vibes_mod;
-        let musc = batter.musclitude * batter_vibes_mod;
-        let thwack = batter.thwackability * batter_vibes_mod;
-        let invpath = (1.0 - batter.patheticism) * batter_vibes_mod;
-        let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+        let div = batter.0.divinity * batter_vibes_mod;
+        let musc = batter.0.musclitude * batter_vibes_mod;
+        let thwack = batter.0.thwackability * batter_vibes_mod;
+        let invpath = (1.0 - batter.0.patheticism) * batter_vibes_mod;
+        let ruth = pitcher.0.ruthlessness * pitcher_vibes_mod;
         let combined = (div + musc + invpath + thwack) / 4.0;
         0.6 + (0.35 * combined) - (0.2 * ruth) + (0.2 * (ballpark.viscosity - 0.5))
     } else {
-        let moxie = batter.moxie * batter_vibes_mod;
-        let path = batter.patheticism;
-        let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+        let moxie = batter.0.moxie * batter_vibes_mod;
+        let path = batter.0.patheticism;
+        let ruth = pitcher.0.ruthlessness * pitcher_vibes_mod;
         let combined = (12.0 * ruth - 5.0 * moxie + 5.0 * path + 4.0 * ballpark.viscosity) / 20.0;
         if combined < 0.0 {
             f64::NAN
@@ -380,25 +443,25 @@ fn roll_contact(
     let fwd = ballpark.forwardness - 0.5;
     let ballpark_sum = (fort + 3.0 * visc - 6.0 * fwd) / 10.0;
 
-    let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
-    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.vibes(date);
+    let batter_vibes_mod = 1.0 + 0.2 * batter.0.vibes(date);
+    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.0.vibes(date);
 
     // NOTE: mostly using the season 14 formula
     let threshold = if strike {
-        let div = batter.divinity;
-        let musc = batter.musclitude;
-        let thwack = batter.thwackability;
-        let path = batter.patheticism;
+        let div = batter.0.divinity;
+        let musc = batter.0.musclitude;
+        let thwack = batter.0.thwackability;
+        let path = batter.0.patheticism;
         let combined = (div + musc + thwack - path) / 2.0 * batter_vibes_mod;
         if combined < 0.0 {
             f64::NAN
         } else {
-            let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+            let ruth = pitcher.0.ruthlessness * pitcher_vibes_mod;
             (0.78 - (0.08 * ruth) + (0.16 * ballpark_sum) + 0.17 * combined.powf(1.2)).min(0.9)
         }
     } else {
-        let path = ((1.0 - batter.patheticism) * batter_vibes_mod).max(0.0);
-        let ruth = pitcher.ruthlessness * pitcher_vibes_mod;
+        let path = ((1.0 - batter.0.patheticism) * batter_vibes_mod).max(0.0);
+        let ruth = pitcher.0.ruthlessness * pitcher_vibes_mod;
         (0.4 - (0.1 * ruth) + (0.35 * path.powf(1.5)) + (0.14 * ballpark_sum)).min(1.0)
     };
     rng.next_f64() < threshold
@@ -406,11 +469,126 @@ fn roll_contact(
 
 fn roll_foul(rng: &mut Rng, date: Date, batter: &Batter<'_>) -> bool {
     let ballpark = Ballpark::default(); // TODO
-    let batter_vibes_mod = 1.0 + 0.2 * batter.vibes(date);
+    let batter_vibes_mod = 1.0 + 0.2 * batter.0.vibes(date);
 
     let batter_sum =
-        (batter.musclitude + batter.thwackability + batter.divinity) * batter_vibes_mod / 3.0;
+        (batter.0.musclitude + batter.0.thwackability + batter.0.divinity) * batter_vibes_mod / 3.0;
     let threshold =
         0.25 + (0.1 * ballpark.forwardness) - (0.1 * ballpark.obtuseness) + (0.1 * batter_sum);
     rng.next_f64() < threshold
+}
+
+fn roll_out(
+    rng: &mut Rng,
+    date: Date,
+    pitcher: &Pitcher<'_>,
+    fielder: &Fielder<'_>,
+    batter: &Batter<'_>,
+) -> bool {
+    let ballpark = Ballpark::default(); // TODO
+    let batter_vibes_mod = 1.0 + 0.2 * batter.0.vibes(date);
+    let fielder_vibes_mod = 1.0 + 0.2 * fielder.0.vibes(date);
+    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.0.vibes(date);
+
+    // rough formula for season 14 from
+    // https://github.com/xSke/resim/blob/main/notebooks/find_roll_formula_out.ipynb
+    let thwack = batter.0.thwackability * batter_vibes_mod;
+    let unthwack = pitcher.0.unthwackability * pitcher_vibes_mod;
+    let omni = fielder.0.omniscience * fielder_vibes_mod;
+    let grand = ballpark.grandiosity - 0.5;
+    let obt = ballpark.obtuseness - 0.5;
+    let omin = ballpark.ominousness - 0.5;
+    let incon = ballpark.inconvenience - 0.5;
+    let visc = ballpark.viscosity - 0.5;
+    let fwd = ballpark.forwardness - 0.5;
+
+    let threshold = 0.3115 + (0.1 * thwack) - (0.08 * unthwack) - (0.065 * omni)
+        + (0.01 * grand)
+        + (0.0085 * obt)
+        - (0.0033 * omin)
+        - (0.0015 * incon)
+        - (0.0033 * visc)
+        + (0.01 * fwd);
+    rng.next_f64() < threshold
+}
+
+fn roll_flyout(rng: &mut Rng, batter: &Batter<'_>) -> bool {
+    let ballpark = Ballpark::default(); // TODO
+    let omin = ballpark.ominousness - 0.5;
+
+    // https://github.com/xSke/resim/blob/main/notebooks/find_roll_formula_fly.ipynb
+    let threshold = 0.18 + (0.3 * batter.0.buoyancy) - (0.16 * batter.0.suppression) - (0.1 * omin);
+    rng.next_f64() < threshold
+}
+
+fn roll_home_run(rng: &mut Rng, date: Date, pitcher: &Pitcher<'_>, batter: &Batter<'_>) -> bool {
+    let ballpark = Ballpark::default(); // TODO
+    let batter_vibes_mod = 1.0 + 0.2 * batter.0.vibes(date);
+    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.0.vibes(date);
+
+    // https://github.com/xSke/resim/blob/main/notebooks/find_roll_formula_hr.ipynb
+    let div = batter.0.divinity * batter_vibes_mod;
+    let opw = pitcher.0.overpowerment * pitcher_vibes_mod;
+    let supp = pitcher.0.suppression * pitcher_vibes_mod;
+    let opw_supp = (10.0 * opw + supp) / 11.0;
+
+    let grand = ballpark.grandiosity - 0.5;
+    let fort = ballpark.fortification - 0.5;
+    let visc = ballpark.viscosity - 0.5;
+    let omin = ballpark.ominousness - 0.5;
+    let fwd = ballpark.forwardness - 0.5;
+    let ballpark_sum = (0.4 * grand) + (0.2 * fort) + (0.08 * visc) + (0.08 * omin) - (0.24 * fwd);
+
+    let threshold = 0.12 + (0.16 * div) - 0.08 * (opw_supp) - (0.18 * ballpark_sum);
+    rng.next_f64() < threshold
+}
+
+fn roll_base_hit(
+    rng: &mut Rng,
+    date: Date,
+    pitcher: &Pitcher<'_>,
+    fielder: &Fielder<'_>,
+    batter: &Batter<'_>,
+) -> u8 {
+    let ballpark = Ballpark::default(); // TODO
+    let batter_vibes_mod = 1.0 + 0.2 * batter.0.vibes(date);
+    let fielder_vibes_mod = 1.0 + 0.2 * fielder.0.vibes(date);
+    let pitcher_vibes_mod = 1.0 + 0.2 * pitcher.0.vibes(date);
+
+    let gf = batter.0.ground_friction * batter_vibes_mod;
+    let musc = batter.0.musclitude * batter_vibes_mod;
+    let opw = pitcher.0.overpowerment * pitcher_vibes_mod;
+    let chase = fielder.0.chasiness * fielder_vibes_mod;
+    let fwd = ballpark.forwardness - 0.5;
+    let grand = ballpark.grandiosity - 0.5;
+    let obt = ballpark.obtuseness - 0.5;
+    let visc = ballpark.viscosity - 0.5;
+    let omin = ballpark.ominousness - 0.5;
+    let elong = ballpark.elongation - 0.5;
+
+    // season 14
+    // https://github.com/xSke/resim/blob/main/notebooks/find_roll_formula_triples_kidror.ipynb
+    let triple_threshold = 0.05 + (0.2 * gf) - (0.04 * opw) - (0.06 * chase)
+        + (0.02 * fwd)
+        + (0.035 * grand)
+        + (0.035 * obt)
+        - (0.005 * omin)
+        - (0.005 * visc);
+    // https://github.com/xSke/resim/blob/main/notebooks/find_roll_formula_doubles.ipynb
+    let double_threshold = 0.165 + (0.2 * musc) - (0.04 * opw) - (0.009 * chase) + (0.027 * fwd)
+        - (0.015 * elong)
+        - (0.01 * omin)
+        - (0.008 * visc);
+
+    let triple_roll = rng.next_f64();
+    let double_roll = rng.next_f64();
+
+    // TODO: Unsure which order these are checked in.
+    if triple_roll < triple_threshold {
+        3
+    } else if double_roll < double_threshold {
+        2
+    } else {
+        1
+    }
 }
