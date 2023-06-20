@@ -56,7 +56,7 @@ impl Game {
     fn tick(&mut self, rng: &mut Rng, database: &mut Database) -> ControlFlow<String, Never> {
         self.handle_game_over(database)?;
         if self.inning == Inning::default() {
-            self.inning = Inning::Top(1);
+            self.inning = Inning::End(0);
             return ControlFlow::Break("Play ball!".into());
         }
         if matches!(self.inning, Inning::Mid(_) | Inning::End(_)) {
@@ -103,6 +103,8 @@ impl Game {
                 // TODO: ground out advances
                 "ground out"
             };
+            self.clear_batter();
+            self.handle_out();
             return ControlFlow::Break(format!(
                 "{} hit a {} to {}.",
                 batter.0.name, kind, fielder.0.name
@@ -252,57 +254,75 @@ impl Game {
     fn handle_steal(&mut self, rng: &mut Rng, database: &Database) -> ControlFlow<String> {
         let _fielder = self.roll_fielder(rng, database);
         let occupied = self.bases_occupied();
-        let mut caught = None;
-        for (idx, entry) in self.baserunners.iter_mut().enumerate() {
-            let base = &mut entry.1;
-            if !occupied.contains(&(*base + 1)) {
-                let runner = entry.0.load(database);
-                let attempt_roll = rng.next_f64();
-                // TODO: steal attempt formula is not yet known
-                if attempt_roll < 0.02 {
-                    let next_base_display = crate::util::BaseDisplay {
-                        base: *base + 1,
+        let mut event: Option<String> = None;
+        for (runner, base) in std::mem::take(&mut self.baserunners) {
+            if event.is_some() || occupied.contains(&(base + 1)) {
+                //   ↑                 ⬑ can't steal an occupied base
+                // a steal already happened
+                self.baserunners.push((runner, base));
+            } else {
+                let runner = runner.load(database);
+
+                // TODO: get steal attempt formula in here
+                let attempt_threshold = 0.02;
+                if rng.next_f64() < attempt_threshold {
+                    let display = crate::util::BaseDisplay {
+                        base: base + 1,
                         home: HOME_BASE,
                     };
-                    let success_roll = rng.next_f64();
-                    // TODO: steal success formula is not yet known
-                    if success_roll < 0.5 {
-                        *base += 1;
-                        return ControlFlow::Break(format!(
-                            "{} steals {}!",
-                            runner.name, next_base_display
-                        ));
+                    // TODO: get steal success formula in here
+                    let success_threshold = 0.5;
+                    if rng.next_f64() < success_threshold {
+                        event = Some(format!("{} steals {}!", runner.name, display));
+                        if base + 1 >= HOME_BASE {
+                            self.teams.select_mut(self.inning.batting()).runs += 1;
+                        } else {
+                            self.baserunners.push((runner.id, base + 1));
+                        }
+                    } else {
+                        event = Some(format!("{} gets caught stealing {}.", runner.name, display));
+                        if self.handle_out() {
+                            // This was the last out of the half-inning, and baserunners should be
+                            // cleared. Return early to avoid adding them.
+                            return ControlFlow::Break(event.unwrap());
+                        }
                     }
-                    caught = Some((
-                        idx,
-                        format!(
-                            "{} gets caught stealing {}.",
-                            runner.name, next_base_display
-                        ),
-                    ));
-                    break;
+                } else {
+                    self.baserunners.push((runner.id, base));
                 }
             }
         }
-        if let Some((idx, message)) = caught {
-            self.baserunners.remove(idx);
-            self.handle_out();
-            ControlFlow::Break(message)
+        if let Some(event) = event {
+            ControlFlow::Break(event)
         } else {
             ControlFlow::Continue(())
         }
     }
 
-    fn handle_out(&mut self) {
+    fn clear_batter(&mut self) {
+        self.balls = 0;
+        self.strikes = 0;
+        if self.at_bat.take().is_some() {
+            self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
+        }
+    }
+
+    fn handle_out(&mut self) -> bool {
         self.outs += 1;
         if self.outs >= OUTS_NEEDED {
             self.balls = 0;
             self.strikes = 0;
             self.outs = 0;
+
+            // don't call `clear_batter` since that advances the lineup order. if that needs to be
+            // done we should have done it somewhere else
             self.at_bat = None;
-            self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
+
             self.baserunners = Vec::new();
             self.inning.advance();
+            true
+        } else {
+            false
         }
     }
 
@@ -328,7 +348,7 @@ impl Game {
                 }
             }
             self.baserunners.push((batter.0.id, 1));
-            self.at_bat = None;
+            self.clear_batter();
             self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
             format!("{} draws a walk.", batter.0.name)
         } else {
@@ -343,8 +363,8 @@ impl Game {
     ) -> ControlFlow<String, Never> {
         self.strikes += 1;
         ControlFlow::Break(if self.strikes >= STRIKES_NEEDED {
+            self.clear_batter();
             self.handle_out();
-            self.at_bat = None;
             self.teams.select_mut(self.inning.batting()).lineup_slot += 1;
             format!("{} strikes out {}.", batter.0.name, kind)
         } else {
@@ -353,13 +373,16 @@ impl Game {
     }
 
     fn handle_home_run(&mut self, batter: &Batter<'_>) -> ControlFlow<String, Never> {
-        let mut runs = 0;
+        let mut runs = 1;
         for _ in self.baserunners.drain(..) {
             runs += 1;
         }
         self.teams.select_mut(self.inning.batting()).runs += runs;
+        self.clear_batter();
         ControlFlow::Break(if runs == 1 {
             format!("{} hits a solo home run!", batter.0.name)
+        } else if runs == u16::from(HOME_BASE) {
+            format!("{} hits a grand slam!", batter.0.name)
         } else {
             format!("{} hits a {}-run home run!", batter.0.name, runs)
         })
@@ -389,6 +412,8 @@ impl Game {
                 self.baserunners.push((runner, base));
             }
         }
+        self.baserunners.push((batter.0.id, bases));
+        self.clear_batter();
         ControlFlow::Break(message)
     }
 }

@@ -1,6 +1,6 @@
 use anyhow::bail;
 use fs_err::File;
-use simx::{AwayHome, Date, Game, Player, Sim, Team};
+use simx::{AwayHome, Date, Game, Inning, Player, Sim, Team};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -19,6 +19,10 @@ fn main() -> anyhow::Result<()> {
         away: teams[0].id,
         home: teams[1].id,
     };
+    let shorthand = AwayHome {
+        away: teams[0].shorthand.clone(),
+        home: teams[1].shorthand.clone(),
+    };
     for team in teams {
         sim.add_team(team)?;
     }
@@ -29,16 +33,26 @@ fn main() -> anyhow::Result<()> {
         sim.tick();
         let game = &sim.games_today()[0];
 
+        print!(
+            "{} {} {} {}  ",
+            shorthand.away, game.teams.away.runs, shorthand.home, game.teams.home.runs
+        );
+
+        match game.inning {
+            Inning::Top(n) | Inning::Mid(n) => print!("▲ {}  ", n),
+            Inning::Bottom(n) | Inning::End(n) => print!("▼ {}  ", n),
+        }
+
         let occupied = game.bases_occupied();
         let max = occupied.last().copied().unwrap_or_default().max(3);
         for base in (1..=max).rev() {
-            match (occupied.contains(&base), base % 2 == 1) {
-                (false, false) => print!("⠪⠂"),
-                (false, true) => print!("⢔⠄"),
-                (true, false) => print!("⠺⠂"),
-                (true, true) => print!("⢴⠄"),
+            if occupied.contains(&base) {
+                print!("◆")
+            } else {
+                print!("◇");
             }
         }
+        print!(" ");
 
         for (num, range) in [
             (game.balls, 0..3.max(game.balls)),
@@ -48,7 +62,7 @@ fn main() -> anyhow::Result<()> {
             print!(" ");
             for i in range {
                 if num > i {
-                    print!("◉");
+                    print!("●");
                 } else {
                     print!("○");
                 }

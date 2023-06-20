@@ -10,6 +10,7 @@ pub struct Team {
     pub id: TeamId,
     pub location: String,
     pub nickname: String,
+    pub shorthand: String,
     pub lineup: Vec<PlayerId>,
     pub rotation: Vec<PlayerId>,
     pub shadows: Vec<PlayerId>,
