@@ -28,7 +28,35 @@ fn main() -> anyhow::Result<()> {
     loop {
         sim.tick();
         let game = &sim.games_today()[0];
-        println!("{}", game.last_update);
+
+        let occupied = game.bases_occupied();
+        let max = occupied.last().copied().unwrap_or_default().max(3);
+        for base in (1..=max).rev() {
+            match (occupied.contains(&base), base % 2 == 1) {
+                (false, false) => print!("⠪⠂"),
+                (false, true) => print!("⢔⠄"),
+                (true, false) => print!("⠺⠂"),
+                (true, true) => print!("⢴⠄"),
+            }
+        }
+
+        for (num, range) in [
+            (game.balls, 0..3.max(game.balls)),
+            (game.strikes, 0..2.max(game.strikes)),
+            (game.outs, 0..2.max(game.outs)),
+        ] {
+            print!(" ");
+            for i in range {
+                if num > i {
+                    print!("◉");
+                } else {
+                    print!("○");
+                }
+            }
+        }
+
+        println!("  {}", game.last_update);
+
         if game.is_finished() {
             break;
         }

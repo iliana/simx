@@ -47,7 +47,7 @@ impl Game {
         self.winner.is_some()
     }
 
-    pub(crate) fn bases_occupied(&self) -> BTreeSet<u8> {
+    pub fn bases_occupied(&self) -> BTreeSet<u8> {
         self.baserunners.iter().map(|(_, base)| *base).collect()
     }
 }
