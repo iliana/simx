@@ -205,12 +205,12 @@ impl Game {
             ControlFlow::Continue(player) => ControlFlow::Continue(player),
             ControlFlow::Break(player) => ControlFlow::Break(format!(
                 "{} batting for the {}.",
+                player.load(database).name,
                 self.teams
                     .select(self.inning.batting())
                     .id
                     .load(database)
                     .nickname,
-                player.load(database).name
             )),
         }
     }
